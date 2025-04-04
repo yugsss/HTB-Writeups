@@ -1,0 +1,140 @@
+Simple Encryptor Walkthrough - HackTheBox
+2024-10-05 clevrf0x
+#hacking  #reversing  #ghidra  #hackthebox  #ctf  #walkthrough 
+
+In this write-up, I’ll take you through my process of solving the Simple Encryptor reversing challenge from HackTheBox. Since I haven't been actively participating in CTFs or cybersecurity challenges for a while, my approach might not be the most optimal, and there could be some mistakes along the way. If you spot any, feel free to reach out—I’d be happy to discuss and correct them.
+
+Just to note, I primarily work as a developer and don’t have formal experience in reverse engineering or tools like Ghidra or IDA Pro, and my assembly knowledge is fairly limited.
+
+## Challenge Information
+
+Now, let’s dive into the challenge. Here’s the official description:
+
+> During one of our routine checks on the secret flag storage server, we discovered it had been hit by ransomware! The original flag data is gone, but luckily, we still have both the encrypted file and the encryption program itself.
+
+First, I downloaded the challenge files, which consisted of a single archive: `Simple Encryptor.zip`. Extracting it using:
+
+```bash
+unzip 'Simple Encryptor.zip'
+```
+
+revealed a directory named `rev_simpleencryptor`, containing two files: `flag.enc` (an encrypted flag file) and `encrypt` (the encryption binary).
+
+### Analyzing the Binary
+
+To begin, I loaded the binary into GDB to get a better sense of what it does:
+
+```bash
+gdb encrypt
+```
+
+Since GDB defaults to AT&T assembly syntax, I switched to Intel format:
+
+```bash
+set disassembly-flavor intel
+```
+
+Then, I started the disassembly process with:
+
+```bash
+disass main
+```
+
+Here’s the initial output:
+
+```
+0x0000000000001289 <+0>:     endbr64
+0x000000000000128d <+4>:     push   rbp
+...
+0x00000000000012e1 <+88>:    mov    rax,QWORD PTR [rbp-0x28]
+```
+
+At this point, I realized that solving the challenge purely by reading assembly wasn’t going to be practical. However, some familiar function calls like `fopen`, `fseek`, and `ftell` stood out, hinting that this binary was working with files. Instead of manually analyzing the assembly, I decided to use Ghidra to decompile the binary into a more readable format.
+
+### Decompiled Code Analysis
+
+After loading `encrypt` into Ghidra, it produced the following decompiled output:
+
+```c
+FILE *file_ptr = fopen("flag", "rb");
+fseek(file_ptr, 0, SEEK_END);
+long file_size = ftell(file_ptr);
+
+fseek(file_ptr, 0, SEEK_SET);
+int *buffer = malloc(file_size);
+fread(buffer, file_size, 1, file_ptr);
+fclose(file_ptr);
+```
+
+From this, it was clear that the program reads the flag file, determines its size, and loads its content into memory.
+
+The encryption mechanism follows:
+
+```c
+int current_time = time(NULL);
+uint seed_number  = (uint)current_time;
+srand(seed_number);
+
+for (int i = 0; i < file_size; i++) {
+  int rand_num_xor = rand();
+  buffer[i] = buffer[i] ^ rand_num_xor;
+
+  int rand_num_bitshift = rand();
+  rand_num_bitshift = rand_num_bitshift & 7;
+  buffer[i] = (buffer[i] << rand_num_bitshift) | (buffer[i] >> 8 - rand_num_bitshift);
+}
+```
+
+The program uses the current timestamp as a seed to generate random values, then XORs and bit-shifts each byte of the file to encrypt it. This transformation can be reversed if we know the seed value.
+
+### Decryption Solution
+
+To decrypt the flag, we need to reverse this process. Here’s my C code to do that:
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int main() {
+  FILE *fp = fopen("flag.enc", "rb");
+  uint32_t seed;
+  fread(&seed, sizeof(seed), 1, fp);
+
+  fseek(fp, 0, SEEK_END);
+  long file_size = ftell(fp) - sizeof(seed);
+  uint8_t *buffer = malloc(file_size);
+
+  fseek(fp, sizeof(seed), SEEK_SET);
+  fread(buffer, 1, file_size, fp);
+  fclose(fp);
+
+  srand(seed);
+  for (int i = 0; i < file_size; i++) {
+    int rand_num_xor = rand();
+    int rand_num_bitshift = rand();
+    int shift_num = rand_num_bitshift & 7;
+
+    buffer[i] = (buffer[i] >> shift_num) | (buffer[i] << (8 - shift_num));
+    buffer[i] = buffer[i] ^ rand_num_xor;
+  }
+
+  printf("%s\n", buffer);
+  free(buffer);
+  return 0;
+}
+```
+
+Compiling and running the decryption script:
+
+```bash
+gcc -o decrypt decrypt.c
+./decrypt
+```
+
+This successfully revealed the flag in the format `HTB{vRy*******************************0r}`.
+
+## Final Thoughts
+
+This challenge was an interesting dive into basic reverse engineering and encryption techniques. The encryption mechanism was simple but effective, and leveraging Ghidra for decompilation made understanding the binary much easier. If you have any insights or suggestions for improving my approach, feel free to reach out!
+
